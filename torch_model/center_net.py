@@ -16,6 +16,7 @@ class CenterNet(nn.Module):
 
     def __build__(self):
         feature = self.feature
+        out_count = len(self.out_activation)
         n_s = self.n_stack
         self.conv7 = nn.Conv2d(3, feature, 7, stride=2, padding=3)
         self.conv3 = nn.Conv2d(feature, feature, 3, stride=1, padding=1)
@@ -24,12 +25,31 @@ class CenterNet(nn.Module):
 
         self.bottles_1 = nn.ModuleList([BottleNeckBlock(feature, feature) for _ in range(n_s-1)])
         self.bottles_2 = nn.ModuleList([BottleNeckBlock(feature, feature) for _ in range(n_s-1)])
-        self.bottles_3 = nn.ModuleList([BottleNeckBlock(self.out_ch, feature) for _ in range(n_s-1)])
-        self.intermediate_out = nn.ModuleList([nn.Conv2d(feature, self.out_ch, 1, stride=1, padding=0) for _ in range(n_s-1)])
 
-        self.out_front = nn.Conv2d(feature, feature, 3, stride=1, padding=1)
-        self.out = nn.Conv2d(feature, self.out_ch, 1, stride=1, padding=0)
-        self.out_batch = nn.BatchNorm2d(feature)
+        self.bottles_3 = nn.ModuleList([BottleNeckBlock(sum(self.out_ch), feature) for _ in range(n_s-1)])
+
+
+
+        total_inter = []
+        for j in range(n_s-1):
+            inter = []
+            for i in range(out_count):
+                inter.append(nn.Conv2d(feature, self.out_ch[i], 1, stride=1, padding=0))
+            total_inter.append(nn.ModuleList(inter))
+
+        self.intermediate_out = nn.ModuleList(total_inter)
+
+        self.out_front = []
+        self.out = []
+        self.out_batch = []
+        for i in range(out_count):
+            self.out_front.append(nn.Conv2d(feature, feature, 3, stride=1, padding=1))
+            self.out.append(nn.Conv2d(feature, self.out_ch[i], 1, stride=1, padding=0))
+            self.out_batch.append(nn.BatchNorm2d(feature))
+
+        self.out_front = nn.ModuleList(self.out_front)
+        self.out = nn.ModuleList(self.out)
+        self.out_batch = nn.ModuleList(self.out_batch)
 
         self.batch1 = nn.BatchNorm2d(feature)
         self.batch2 = nn.BatchNorm2d(feature)
@@ -46,17 +66,24 @@ class CenterNet(nn.Module):
             x = self.hours[i](x)
             x = self.bottles_1[i](x)
 
-            intermediate_out = self.out_activation(self.intermediate_out[i](x))
-            output.append(intermediate_out)
+            inter_out = []
+            for j in range(len(self.out_ch)):
+                intermediate_out = self.out_activation[i](self.intermediate_out[i][j](x))
+                inter_out.append(intermediate_out)
+            output.append(inter_out)
             x = self.bottles_2[i](x)
+            intermediate_out = torch.cat([inter for inter in inter_out], dim=1)
             inter = self.bottles_3[i](intermediate_out)
             x = init + inter + x
 
         last_hour = self.hours[-1](x)
 
-        out = torch.selu(self.out_batch(self.out_front(last_hour)))
-        out = self.out_activation(self.out(out))
-        output.append(out)
+        last_out = []
+        for i in range(len(self.out_ch)):
+            out = torch.selu(self.out_batch[i](self.out_front[i](last_hour)))
+            out = self.out_activation[i](self.out[i](out))
+            last_out.append(out)
+        output.append(last_out)
 
         return output
 
